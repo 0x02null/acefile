@@ -1094,7 +1094,7 @@ class BitStream:
         """
         Read a Golomb-Rice code with *r_bits* remainder bits and an arbitrary
         number of quotient bits from bitstream and return the represented
-        value.  Iff *signed* is True, interpret the lowest order bit as sign
+        value.  If *signed* is True, interpret the lowest order bit as sign
         bit and return a signed integer.
         """
         if r_bits == 0:
@@ -3551,7 +3551,7 @@ class AceArchive:
         """
         return [am.filename for am in self.getmembers()]
 
-    def extract(self, member, *, path=None, pwd=None, restore=False):
+    def extract(self, member, *, path=None, pwd=None, restore=False, dirs: dict = None) -> None:
         """
         Extract an archive member to *path* or the current working directory.
         *Member* can refer to an :class:`AceMember` object, a member name or
@@ -3560,9 +3560,12 @@ class AceArchive:
         encrypted.
         Raises :class:`EncryptedArchiveError` if an archive member is
         encrypted but no password was provided.
-        Iff *restore* is True, restore mtime and atime for non-dir members,
-        file attributes and NT security information as far as supported by
-        the platform.
+        Iff *restore* is True, restore mtime and atime from,file attributes
+        and NT security information as far as supported by the platform.
+        If dirs Dict providede, stores `dir_name: timestamp` value to restore
+        original timestamp on dir later. Dir modification time changes when
+        sub dir or file inside dir is created/deleted. Thus dir timestamps
+        may be restored only after all files will be extracted.
 
         .. note::
 
@@ -3583,6 +3586,7 @@ class AceArchive:
         if am.is_dir():
             try:
                 os.mkdir(fn)
+                dirs[fn] = am.datetime.timestamp()
             except FileExistsError:
                 pass
         else:
@@ -3601,7 +3605,7 @@ class AceArchive:
                 os.chmod(fn, mode & ~all_w)
             if SetFileSecurity and am.ntsecurity:
                 SetFileSecurity(fn, 0x7, am.ntsecurity)
-            if not am.is_dir():
+            if not am.is_dir() and dirs is not None:
                 ts = am.datetime.timestamp()
                 os.utime(fn, (ts, ts))
 
@@ -3614,9 +3618,9 @@ class AceArchive:
         Password *pwd* is used to decrypt encrypted archive members.
         To extract archives that use multiple different passwords for different
         archive members, you must use :meth:`AceArchive.extract` instead.
-        Raises :class:`EncryptedArchiveError` if an archive member is
+        Raises :class:`EncryptedArchiveError` iff an archive member is
         encrypted but no password was provided.
-        Iff *restore* is True, restore mtime and atime for non-dir members,
+        If *restore* is True, restore mtime and atime for non-dir members,
         file attributes and NT security information as far as supported by
         the platform.
         """
@@ -3632,8 +3636,12 @@ class AceArchive:
                        member._idx in members:
                         sorted_members.append(member)
                 members = sorted_members
+        dir_timestamps = {}
         for am in members:
-            self.extract(am, path=path, pwd=pwd, restore=restore)
+            self.extract(am, path=path, pwd=pwd, restore=restore, dirs=dir_timestamps)
+        for dir, timestamp in dir_timestamps.items():
+            os.utime(dir, (timestamp, timestamp))
+
 
     def read(self, member, *, pwd=None):
         """
@@ -4106,6 +4114,12 @@ def unace():
                     members = [f.getmember(m) for m in args.file]
                 else:
                     members = f.getmembers()
+
+                if args.restore:
+                    dir_timestamps = {}
+                else:
+                    dir_timestamps = None
+
                 for am in members:
                     if status:
                         status.member = am.filename
@@ -4117,9 +4131,13 @@ def unace():
                             password = None
                     while True:
                         try:
-                            f.extract(am, path=args.basedir,
-                                          pwd=password,
-                                          restore=args.restore)
+                            f.extract(
+                                am,
+                                path=args.basedir,
+                                pwd=password,
+                                restore=args.restore,
+                                dirs=dir_timestamps
+                            )
                             if args.verbose:
                                 eprint("%s" % am.filename)
                             break
@@ -4148,6 +4166,9 @@ def unace():
                         sys.exit(1)
                     if args.verbose and am.comment:
                         eprint(asciibox(am.comment, title='file comment'))
+                if dir_timestamps is not None:
+                    for dir, timestamp in dir_timestamps.items():
+                        os.utime(dir, (timestamp, timestamp))
                 if failed > 0:
                     sys.exit(1)
 
